@@ -1,5 +1,5 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { createMcpHandler } from "agents/mcp";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 interface Env {
@@ -8,452 +8,419 @@ interface Env {
   BEAR_BLOG_SUBDOMAIN: string;
 }
 
-const BASE_URL = "https://bearblog.dev";
-
-function getCookieHeader(env: Env): string {
-  return (
-    `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
-    `csrftoken=${env.BEAR_BLOG_CSRF_TOKEN}`
-  );
-}
-
-function getBearBlogHeaders(env: Env): HeadersInit {
-  return {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-      "AppleWebKit/537.36 (KHTML, like Gecko) " +
-      "Chrome/120 Safari/537.36",
-
-    "Referer":
-      `${BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`,
-
-    "Cookie": getCookieHeader(env),
-  };
-}
-
-function createServer(env: Env): McpServer {
+function createServer(env: Env) {
   const server = new McpServer({
     name: "bearblog-mcp-worker",
-    version: "1.1.0",
+    version: "1.0.0",
   });
 
-  // ============================================================
-  // BearBlog connection test
-  // ============================================================
-
-  server.tool(
+  /*
+   * 1. 测试 BearBlog 登录状态
+   */
+  server.registerTool(
     "bearblog_test",
-    "Test the real BearBlog connection.",
-    {},
+    {
+      description: "Test the BearBlog connection and authentication.",
+      inputSchema: {},
+    },
     async () => {
-      try {
-        const dashboardUrl =
-          `${BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
+      const baseUrl = "https://bearblog.dev";
 
-        const response = await fetch(dashboardUrl, {
-          method: "GET",
-          redirect: "manual",
-          headers: getBearBlogHeaders(env),
-        });
+      const dashboardUrl =
+        `${baseUrl}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
 
-        const html = await response.text();
+      const response = await fetch(dashboardUrl, {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+          "Referer": baseUrl,
+          "Cookie":
+            `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
+            `csrftoken=${env.BEAR_BLOG_CSRF_TOKEN}`,
+        },
+      });
 
-        const success =
-          response.status === 200 &&
-          html.toLowerCase().includes("dashboard");
+      const html = await response.text();
 
-        if (success) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `✅ BearBlog 连接成功\n` +
-                  `博客：${env.BEAR_BLOG_SUBDOMAIN}\n` +
-                  `状态码：${response.status}\n` +
-                  `认证：成功`,
-              },
-            ],
-          };
-        }
+      const success =
+        response.status === 200 &&
+        html.toLowerCase().includes("dashboard");
 
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                `❌ BearBlog 认证失败\n` +
-                `博客：${env.BEAR_BLOG_SUBDOMAIN}\n` +
-                `状态码：${response.status}\n` +
-                `响应长度：${html.length}`,
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                `❌ BearBlog 连接异常\n` +
-                `${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
-      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: success
+              ? [
+                  "✅ BearBlog 连接成功",
+                  `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
+                  `状态码：${response.status}`,
+                  "认证：成功",
+                ].join("\n")
+              : [
+                  "❌ BearBlog 认证失败",
+                  `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
+                  `状态码：${response.status}`,
+                  `响应长度：${html.length}`,
+                ].join("\n"),
+          },
+        ],
+      };
     }
   );
 
-  // ============================================================
-  // Create BearBlog post
-  // ============================================================
-
-  server.tool(
+  /*
+   * 2. 创建 BearBlog 文章
+   */
+  server.registerTool(
     "bearblog_create_post",
-    "Create a new post on BearBlog.",
     {
-      title: z
-        .string()
-        .min(1)
-        .describe("文章标题"),
+      description:
+        "Create and publish a new article on BearBlog.",
+      inputSchema: {
+        title: z.string().min(1).describe("Article title"),
 
-      content: z
-        .string()
-        .describe("文章正文，支持 Markdown"),
+        content: z
+          .string()
+          .min(1)
+          .describe("Article content in Markdown or HTML"),
 
-      published: z
-        .boolean()
-        .default(true)
-        .describe("true=立即发布，false=保存为草稿"),
+        published: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("Whether to publish immediately"),
 
-      slug: z
-        .string()
-        .optional()
-        .describe("文章 slug，可选"),
+        slug: z
+          .string()
+          .optional()
+          .describe("Optional article slug"),
 
-      meta_description: z
-        .string()
-        .optional()
-        .describe("SEO 描述，可选"),
+        meta_description: z
+          .string()
+          .optional()
+          .describe("Optional meta description"),
 
-      tags: z
-        .string()
-        .optional()
-        .describe("文章标签，例如：AI,Notion,BearBlog"),
+        tags: z
+          .string()
+          .optional()
+          .describe("Optional comma-separated tags"),
+      },
     },
-
     async ({
       title,
       content,
-      published,
+      published = true,
       slug,
       meta_description,
       tags,
     }) => {
-      try {
-        // --------------------------------------------------------
-        // 第一步：打开 BearBlog 新建文章页面
-        // --------------------------------------------------------
+      const baseUrl = "https://bearblog.dev";
 
-        const newPostUrl =
-          `${BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/posts/new/`;
+      const dashboardUrl =
+        `${baseUrl}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
 
-        const pageResponse = await fetch(newPostUrl, {
-          method: "GET",
-          redirect: "manual",
-          headers: getBearBlogHeaders(env),
-        });
+      /*
+       * 第一步：访问 dashboard
+       * 获取 BearBlog 当前页面和 CSRF 状态
+       */
+      const dashboardResponse = await fetch(dashboardUrl, {
+        method: "GET",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
 
-        const pageHtml = await pageResponse.text();
+          "Cookie":
+            `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
+            `csrftoken=${env.BEAR_BLOG_CSRF_TOKEN}`,
+        },
+      });
 
-        if (
-          pageResponse.status !== 200 &&
-          pageResponse.status !== 302
-        ) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `❌ 无法打开 BearBlog 新建文章页面\n` +
-                  `状态码：${pageResponse.status}\n` +
-                  `响应长度：${pageHtml.length}`,
-              },
-            ],
-          };
-        }
+      const dashboardHtml =
+        await dashboardResponse.text();
 
-        // --------------------------------------------------------
-        // 第二步：寻找 CSRF token
-        // --------------------------------------------------------
-
-        const csrfMatch =
-          pageHtml.match(
-            /name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)["']/i
-          ) ||
-          pageHtml.match(
-            /value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken["']/i
-          );
-
-        const csrfToken =
-          csrfMatch?.[1] || env.BEAR_BLOG_CSRF_TOKEN;
-
-        // --------------------------------------------------------
-        // 第三步：创建表单
-        // --------------------------------------------------------
-
-        const form = new URLSearchParams();
-
-        form.set(
-          "csrfmiddlewaretoken",
-          csrfToken
-        );
-
-        form.set(
-          "title",
-          title
-        );
-
-        form.set(
-          "content",
-          content
-        );
-
-        if (slug) {
-          form.set(
-            "slug",
-            slug
-          );
-        }
-
-        if (meta_description) {
-          form.set(
-            "meta_description",
-            meta_description
-          );
-        }
-
-        if (tags) {
-          form.set(
-            "tags",
-            tags
-          );
-        }
-
-        if (published) {
-          form.set(
-            "published",
-            "on"
-          );
-        }
-
-        // --------------------------------------------------------
-        // 第四步：提交 BearBlog
-        // --------------------------------------------------------
-
-        const response = await fetch(newPostUrl, {
-          method: "POST",
-          redirect: "manual",
-
-          headers: {
-            ...getBearBlogHeaders(env),
-
-            "Content-Type":
-              "application/x-www-form-urlencoded",
-
-            "X-CSRFToken":
-              csrfToken,
-          },
-
-          body: form.toString(),
-        });
-
-        const responseText =
-          await response.text();
-
-        // --------------------------------------------------------
-        // 第五步：判断结果
-        // --------------------------------------------------------
-
-        const location =
-          response.headers.get("location");
-
-        const redirected =
-          response.status >= 300 &&
-          response.status < 400;
-
-        if (redirected) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `✅ BearBlog 文章创建成功\n\n` +
-                  `标题：${title}\n` +
-                  `状态：${published ? "已发布" : "草稿"}\n` +
-                  `博客：${env.BEAR_BLOG_SUBDOMAIN}\n` +
-                  `HTTP：${response.status}\n` +
-                  `跳转：${location || "成功"}`,
-              },
-            ],
-          };
-        }
-
-        // --------------------------------------------------------
-        // 如果没有跳转，返回服务器信息
-        // --------------------------------------------------------
-
+      if (dashboardResponse.status !== 200) {
         return {
           content: [
             {
               type: "text",
               text:
-                `⚠️ BearBlog 没有确认文章创建成功\n\n` +
-                `HTTP 状态：${response.status}\n` +
-                `响应长度：${responseText.length}\n\n` +
-                `服务器响应：\n` +
-                responseText.substring(0, 2000),
-            },
-          ],
-        };
-
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                `❌ 创建 BearBlog 文章时发生异常\n\n` +
-                `${
-                  error instanceof Error
-                    ? error.stack || error.message
-                    : String(error)
-                }`,
+                `❌ 无法访问 BearBlog Dashboard\n` +
+                `状态码：${dashboardResponse.status}\n` +
+                `响应长度：${dashboardHtml.length}`,
             },
           ],
         };
       }
+
+      /*
+       * 第二步：
+       * 从 Dashboard 页面提取 CSRF token
+       *
+       * 如果页面中有新的 csrftoken，
+       * 优先使用新的 token。
+       */
+      let csrfToken =
+        env.BEAR_BLOG_CSRF_TOKEN;
+
+      const csrfMatch =
+        dashboardHtml.match(
+          /name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)["']/i
+        );
+
+      if (csrfMatch) {
+        csrfToken = csrfMatch[1];
+      }
+
+      /*
+       * BearBlog 新文章页面
+       */
+      const newPostUrl =
+        `${baseUrl}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/posts/new/`;
+
+      const newPostResponse = await fetch(
+        newPostUrl,
+        {
+          method: "GET",
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+
+            "Cookie":
+              `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
+              `csrftoken=${csrfToken}`,
+          },
+        }
+      );
+
+      const newPostHtml =
+        await newPostResponse.text();
+
+      if (newPostResponse.status !== 200) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `❌ 无法打开 BearBlog 新文章页面\n` +
+                `状态码：${newPostResponse.status}`,
+            },
+          ],
+        };
+      }
+
+      /*
+       * 从新文章页面寻找真正的提交地址
+       */
+      const formMatch =
+        newPostHtml.match(
+          /<form[^>]+action=["']([^"']+)["'][^>]*>/i
+        );
+
+      const formAction =
+        formMatch?.[1] ||
+        newPostUrl;
+
+      const submitUrl =
+        formAction.startsWith("http")
+          ? formAction
+          : new URL(
+              formAction,
+              baseUrl
+            ).toString();
+
+      /*
+       * 提取页面里的 CSRF token
+       */
+      const pageCsrfMatch =
+        newPostHtml.match(
+          /name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)["']/i
+        );
+
+      if (pageCsrfMatch) {
+        csrfToken = pageCsrfMatch[1];
+      }
+
+      /*
+       * 构造提交数据
+       */
+      const formData =
+        new URLSearchParams();
+
+      formData.set(
+        "csrfmiddlewaretoken",
+        csrfToken
+      );
+
+      formData.set(
+        "title",
+        title
+      );
+
+      formData.set(
+        "body",
+        content
+      );
+
+      if (slug) {
+        formData.set(
+          "slug",
+          slug
+        );
+      }
+
+      if (meta_description) {
+        formData.set(
+          "meta_description",
+          meta_description
+        );
+      }
+
+      if (tags) {
+        formData.set(
+          "tags",
+          tags
+        );
+      }
+
+      /*
+       * BearBlog 表单字段
+       *
+       * published=true 时尝试提交发布状态
+       */
+      if (published) {
+        formData.set(
+          "published",
+          "on"
+        );
+      }
+
+      /*
+       * 提交文章
+       */
+      const createResponse =
+        await fetch(
+          submitUrl,
+          {
+            method: "POST",
+
+            redirect: "manual",
+
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+
+              "Referer":
+                newPostUrl,
+
+              "Origin":
+                baseUrl,
+
+              "Cookie":
+                `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
+                `csrftoken=${csrfToken}`,
+
+              "Content-Type":
+                "application/x-www-form-urlencoded",
+            },
+
+            body:
+              formData.toString(),
+          }
+        );
+
+      const responseText =
+        await createResponse.text();
+
+      /*
+       * BearBlog 正常创建后通常会返回 302
+       */
+      const success =
+        createResponse.status === 302 ||
+        createResponse.status === 303 ||
+        createResponse.status === 200;
+
+      if (!success) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `❌ BearBlog 发布失败\n` +
+                `状态码：${createResponse.status}\n` +
+                `提交地址：${submitUrl}\n` +
+                `响应长度：${responseText.length}\n\n` +
+                `请检查 BearBlog 页面字段是否发生变化。`,
+            },
+          ],
+        };
+      }
+
+      const location =
+        createResponse.headers.get(
+          "location"
+        );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              "✅ BearBlog 文章发布成功",
+              `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
+              `标题：${title}`,
+              `状态码：${createResponse.status}`,
+              location
+                ? `跳转地址：${location}`
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      };
     }
   );
 
   return server;
 }
 
-// ================================================================
-// Cloudflare Worker
-// ================================================================
-
 export default {
-  async fetch(
-    request: Request,
-    env: Env
-  ): Promise<Response> {
+  fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
 
-    const url =
-      new URL(request.url);
-
-    // ------------------------------------------------------------
-    // 首页
-    // ------------------------------------------------------------
-
+    /*
+     * 首页
+     */
     if (url.pathname === "/") {
       return new Response(
         "BearBlog MCP Worker is running.",
         {
           status: 200,
           headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-          },
-        }
-      );
-    }
-
-    // ------------------------------------------------------------
-    // MCP endpoint
-    // ------------------------------------------------------------
-
-    if (url.pathname !== "/mcp") {
-      return new Response(
-        "Not Found",
-        {
-          status: 404,
-        }
-      );
-    }
-
-    // ------------------------------------------------------------
-    // MCP 使用 POST
-    // ------------------------------------------------------------
-
-    if (request.method !== "POST") {
-      return new Response(
-        "BearBlog MCP endpoint. Use POST for MCP requests.",
-        {
-          status: 405,
-          headers: {
-            "Allow": "POST",
-          },
-        }
-      );
-    }
-
-    try {
-      // ----------------------------------------------------------
-      // 创建 MCP Server
-      // ----------------------------------------------------------
-
-      const server =
-        createServer(env);
-
-      // ----------------------------------------------------------
-      // Cloudflare Worker 必须使用 Web Standard Transport
-      // ----------------------------------------------------------
-
-      const transport =
-        new WebStandardStreamableHTTPServerTransport({
-          sessionIdGenerator: undefined,
-          enableJsonResponse: true,
-        });
-
-      // ----------------------------------------------------------
-      // MCP Server → Transport
-      // ----------------------------------------------------------
-
-      await server.connect(
-        transport
-      );
-
-      // ----------------------------------------------------------
-      // 处理 MCP 请求
-      // ----------------------------------------------------------
-
-      return await transport.handleRequest(
-        request
-      );
-
-    } catch (error) {
-
-      console.error(
-        "MCP Worker Error:",
-        error
-      );
-
-      return new Response(
-        JSON.stringify({
-          error: "MCP server error",
-          message:
-            error instanceof Error
-              ? error.message
-              : String(error),
-        }),
-        {
-          status: 500,
-          headers: {
             "Content-Type":
-              "application/json",
+              "text/plain; charset=utf-8",
           },
         }
       );
     }
+
+    /*
+     * MCP endpoint
+     */
+    if (url.pathname === "/mcp") {
+      return createMcpHandler(
+        createServer(env)
+      )(request, env);
+    }
+
+    return new Response(
+      "Not Found",
+      {
+        status: 404,
+      }
+    );
   },
 };
