@@ -15,53 +15,45 @@ function createServer(env: Env) {
   });
 
   server.tool(
-    "bearblog_test",
-    "Test BearBlog connection.",
-    {},
-    async () => ({
+  "bearblog_test",
+  "Test the real BearBlog connection.",
+  {},
+  async () => {
+    const baseUrl = "https://bearblog.dev";
+    const dashboardUrl =
+      `${baseUrl}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
+
+    const response = await fetch(dashboardUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Referer": baseUrl,
+        "Cookie":
+          `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
+          `csrftoken=${env.BEAR_BLOG_CSRF_TOKEN}`
+      }
+    });
+
+    const html = await response.text();
+
+    const success =
+      response.status === 200 &&
+      html.toLowerCase().includes("dashboard");
+
+    return {
       content: [
         {
           type: "text",
-          text:
-            `BearBlog MCP connected.\n` +
-            `Blog: ${env.BEAR_BLOG_SUBDOMAIN}\n` +
-            `Session configured: ${Boolean(env.BEAR_BLOG_SESSION_ID)}\n` +
-            `CSRF configured: ${Boolean(env.BEAR_BLOG_CSRF_TOKEN)}`
+          text: success
+            ? `✅ BearBlog 连接成功\n博客：${env.BEAR_BLOG_SUBDOMAIN}\n状态码：${response.status}`
+            : `❌ BearBlog 认证失败\n博客：${env.BEAR_BLOG_SUBDOMAIN}\n状态码：${response.status}\n响应长度：${html.length}`
         }
       ]
-    })
-  );
-
-  server.tool(
-    "bearblog_create_post",
-    "Create a new BearBlog post.",
-    {
-      title: z.string().describe("Post title"),
-      content: z.string().describe("Markdown or HTML content"),
-      published_date: z.string().optional().describe("Publish date, optional")
-    },
-    async ({ title, content, published_date }) => {
-
-      /*
-       * 第一步先测试参数是否能够从 MCP 正常传进来。
-       * 真正的 BearBlog API 请求下一步再接。
-       */
-
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              `收到发布请求\n\n` +
-              `标题：${title}\n` +
-              `内容长度：${content.length}\n` +
-              `发布时间：${published_date ?? "立即"}\n` +
-              `博客：${env.BEAR_BLOG_SUBDOMAIN}`
-          }
-        ]
-      };
-    }
-  );
+    };
+  }
+);
 
   return server;
 }
