@@ -1,7 +1,5 @@
-import {
-  McpServer,
-  WebStandardStreamableHTTPServerTransport,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { createMcpHandler } from "agents/mcp/server";
 
 interface Env {
   BEAR_BLOG_SESSION_ID: string;
@@ -36,9 +34,7 @@ function createServer(env: Env) {
           headers: {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-
             "Referer": baseUrl,
-
             "Cookie":
               `sessionid=${env.BEAR_BLOG_SESSION_ID}; ` +
               `csrftoken=${env.BEAR_BLOG_CSRF_TOKEN}`,
@@ -111,14 +107,12 @@ function createServer(env: Env) {
 
       published_date: {
         type: "string",
-        description:
-          "发布时间，可选，例如 2026-08-17",
+        description: "发布时间，可选，例如 2026-08-17",
       },
 
       tags: {
         type: "string",
-        description:
-          "标签，可选，多个标签使用逗号分隔",
+        description: "标签，可选，多个标签使用逗号分隔",
       },
     },
     async ({
@@ -149,11 +143,13 @@ function createServer(env: Env) {
           form.set("tags", tags);
         }
 
-        form.set("csrfmiddlewaretoken", env.BEAR_BLOG_CSRF_TOKEN);
+        form.set(
+          "csrfmiddlewaretoken",
+          env.BEAR_BLOG_CSRF_TOKEN
+        );
 
         const response = await fetch(url, {
           method: "POST",
-
           redirect: "manual",
 
           headers: {
@@ -232,7 +228,8 @@ function createServer(env: Env) {
 export default {
   async fetch(
     request: Request,
-    env: Env
+    env: Env,
+    ctx: ExecutionContext
   ): Promise<Response> {
 
     const url = new URL(request.url);
@@ -247,7 +244,8 @@ export default {
         {
           status: 200,
           headers: {
-            "Content-Type": "text/plain; charset=utf-8",
+            "Content-Type":
+              "text/plain; charset=utf-8",
           },
         }
       );
@@ -264,79 +262,17 @@ export default {
     }
 
     // =========================
-    // CORS
+    // MCP Handler
     // =========================
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods":
-            "POST, GET, OPTIONS",
-          "Access-Control-Allow-Headers":
-            "Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version",
-          "Access-Control-Expose-Headers":
-            "Mcp-Session-Id",
-        },
-      });
-    }
-
-    // =========================
-    // MCP 使用 POST
-    // =========================
-
-    if (request.method !== "POST") {
-      return new Response(
-        "BearBlog MCP endpoint. Use POST for MCP requests.",
-        {
-          status: 405,
-          headers: {
-            Allow: "POST",
-          },
-        }
-      );
-    }
 
     try {
-      const server = createServer(env);
-
-      const transport =
-        new WebStandardStreamableHTTPServerTransport({
-          sessionIdGenerator: undefined,
-          enableJsonResponse: true,
-        });
-
-      await server.connect(transport);
-
-      const response =
-        await transport.handleRequest(request);
-
-      const headers = new Headers(response.headers);
-
-      headers.set(
-        "Access-Control-Allow-Origin",
-        "*"
+      const handler = createMcpHandler(
+        () => createServer(env)
       );
 
-      headers.set(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version"
-      );
-
-      headers.set(
-        "Access-Control-Expose-Headers",
-        "Mcp-Session-Id"
-      );
-
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      });
+      return handler(request, env, ctx);
 
     } catch (error) {
-
       console.error(
         "MCP Worker Error:",
         error
@@ -355,8 +291,6 @@ export default {
           headers: {
             "Content-Type":
               "application/json; charset=utf-8",
-            "Access-Control-Allow-Origin":
-              "*",
           },
         }
       );
