@@ -10,6 +10,18 @@ interface Env {
 
 const BEAR_BASE_URL = "https://bearblog.dev";
 
+function blogDashboardUrl(env: Env): string {
+  return `${BEAR_BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
+}
+
+function blogPostsUrl(env: Env): string {
+  return `${BEAR_BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/posts/`;
+}
+
+function blogCreatePostUrl(env: Env): string {
+  return `${BEAR_BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/posts/create/`;
+}
+
 function bearCookie(env: Env): string {
   return [
     `sessionid=${env.BEAR_BLOG_SESSION_ID}`,
@@ -17,11 +29,51 @@ function bearCookie(env: Env): string {
   ].join("; ");
 }
 
+function hasEnv(env: Env): boolean {
+  return Boolean(
+    env.BEAR_BLOG_SUBDOMAIN &&
+      env.BEAR_BLOG_SESSION_ID &&
+      env.BEAR_BLOG_CSRF_TOKEN
+  );
+}
+
+function envDebugText(env: Env): string {
+  return [
+    "BearBlog 环境变量检查：",
+    `BEAR_BLOG_SUBDOMAIN: ${env.BEAR_BLOG_SUBDOMAIN || "undefined"}`,
+    `BEAR_BLOG_SESSION_ID: ${
+      env.BEAR_BLOG_SESSION_ID ? "已设置" : "undefined"
+    }`,
+    `BEAR_BLOG_CSRF_TOKEN: ${
+      env.BEAR_BLOG_CSRF_TOKEN ? "已设置" : "undefined"
+    }`,
+  ].join("\n");
+}
+
 function createServer(env: Env) {
   const server = new McpServer({
     name: "bearblog-mcp-worker",
-    version: "0.4.0",
+    version: "0.4.1",
   });
+
+  server.registerTool(
+    "bearblog_debug_env",
+    {
+      description:
+        "Check whether BearBlog environment variables are configured. Does not reveal secret values.",
+      inputSchema: {},
+    },
+    async () => {
+      return {
+        content: [
+          {
+            type: "text",
+            text: envDebugText(env),
+          },
+        ],
+      };
+    }
+  );
 
   server.registerTool(
     "bearblog_test",
@@ -30,7 +82,27 @@ function createServer(env: Env) {
       inputSchema: {},
     },
     async () => {
-      const dashboardUrl = `${BEAR_BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
+      if (!hasEnv(env)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                "❌ BearBlog 环境变量不完整",
+                "",
+                envDebugText(env),
+                "",
+                "请到 Cloudflare Worker → 设置 → 变量和密钥，确认这三项存在：",
+                "BEAR_BLOG_SUBDOMAIN",
+                "BEAR_BLOG_SESSION_ID",
+                "BEAR_BLOG_CSRF_TOKEN",
+              ].join("\n"),
+            },
+          ],
+        };
+      }
+
+      const dashboardUrl = blogDashboardUrl(env);
 
       try {
         const response = await fetch(dashboardUrl, {
@@ -39,23 +111,24 @@ function createServer(env: Env) {
           headers: {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-            "Referer": BEAR_BASE_URL,
+            "Accept":
+              "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": `${BEAR_BASE_URL}/dashboard/`,
             "Cookie": bearCookie(env),
           },
         });
 
         const html = await response.text();
-
         const lower = html.toLowerCase();
+        const location = response.headers.get("location") ?? "";
 
         const success =
           response.status === 200 &&
-          (
-            lower.includes("dashboard") ||
+          (lower.includes("dashboard") ||
             lower.includes("posts") ||
             lower.includes("logout") ||
-            lower.includes("new post")
-          );
+            lower.includes("sign out") ||
+            lower.includes("settings"));
 
         return {
           content: [
@@ -64,19 +137,27 @@ function createServer(env: Env) {
               text: success
                 ? [
                     "✅ BearBlog 连接成功",
+                    "",
                     `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
+                    `访问地址：${dashboardUrl}`,
                     `状态码：${response.status}`,
                     "认证：成功",
+                    "",
+                    envDebugText(env),
                   ].join("\n")
                 : [
                     "❌ BearBlog 认证可能失败",
-                    `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
-                    `状态码：${response.status}`,
-                    `响应长度：${html.length}`,
-                    `Location：${response.headers.get("location") ?? ""}`,
                     "",
-                    "响应前 500 字：",
-                    html.slice(0, 500),
+                    `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
+                    `访问地址：${dashboardUrl}`,
+                    `状态码：${response.status}`,
+                    `Location：${location || "无"}`,
+                    `响应长度：${html.length}`,
+                    "",
+                    envDebugText(env),
+                    "",
+                    "响应前 800 字：",
+                    html.slice(0, 800),
                   ].join("\n"),
             },
           ],
@@ -114,8 +195,23 @@ function createServer(env: Env) {
       },
     },
     async ({ title, content, published, published_date, tags }) => {
-      const createUrl = `${BEAR_BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/posts/create/`;
-      const dashboardUrl = `${BEAR_BASE_URL}/${env.BEAR_BLOG_SUBDOMAIN}/dashboard/`;
+      if (!hasEnv(env)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                "❌ BearBlog 环境变量不完整，无法发布",
+                "",
+                envDebugText(env),
+              ].join("\n"),
+            },
+          ],
+        };
+      }
+
+      const createUrl = blogCreatePostUrl(env);
+      const dashboardUrl = blogDashboardUrl(env);
 
       try {
         const form = new URLSearchParams();
@@ -142,6 +238,8 @@ function createServer(env: Env) {
           headers: {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "Accept":
+              "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Referer": dashboardUrl,
             "Origin": BEAR_BASE_URL,
             "Content-Type": "application/x-www-form-urlencoded",
@@ -151,15 +249,17 @@ function createServer(env: Env) {
         });
 
         const responseText = await response.text();
-        const location = response.headers.get("location");
+        const location = response.headers.get("location") ?? "";
+
+        const lower = responseText.toLowerCase();
 
         const success =
           response.status === 302 ||
           response.status === 303 ||
-          (
-            response.status === 200 &&
-            !responseText.toLowerCase().includes("csrf")
-          );
+          (response.status === 200 &&
+            !lower.includes("csrf") &&
+            !lower.includes("forbidden") &&
+            !lower.includes("accounts/login"));
 
         if (!success) {
           return {
@@ -168,13 +268,17 @@ function createServer(env: Env) {
                 type: "text",
                 text: [
                   "❌ BearBlog 发布失败",
+                  "",
+                  `提交地址：${createUrl}`,
                   `状态码：${response.status}`,
-                  `Location：${location ?? ""}`,
+                  `Location：${location || "无"}`,
                   `响应长度：${responseText.length}`,
                   `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
                   "",
-                  "响应前 800 字：",
-                  responseText.slice(0, 800),
+                  envDebugText(env),
+                  "",
+                  "响应前 1000 字：",
+                  responseText.slice(0, 1000),
                 ].join("\n"),
               },
             ],
@@ -187,10 +291,12 @@ function createServer(env: Env) {
               type: "text",
               text: [
                 "✅ BearBlog 文章提交成功",
+                "",
                 `标题：${title}`,
                 `博客：${env.BEAR_BLOG_SUBDOMAIN}`,
+                `提交地址：${createUrl}`,
                 `状态码：${response.status}`,
-                `Location：${location ?? ""}`,
+                `Location：${location || "无"}`,
                 `发布状态：${published ? "已发布" : "草稿"}`,
               ].join("\n"),
             },
@@ -228,6 +334,15 @@ export default {
 
     if (url.pathname === "/") {
       return new Response("BearBlog MCP Worker is running. Use /mcp.", {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+        },
+      });
+    }
+
+    if (url.pathname === "/debug") {
+      return new Response(envDebugText(env), {
         status: 200,
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
